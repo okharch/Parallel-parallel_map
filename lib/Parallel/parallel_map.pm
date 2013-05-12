@@ -13,12 +13,15 @@ our @ISA = qw(Exporter);
 
 our @EXPORT = qw(parallel_map);
 
-my $number_of_cpu_cores; 
+# this should work with Windows NT or if user explicitly set that
+my $number_of_cpu_cores = $ENV{NUMBER_OF_PROCESSORS}; 
 sub number_of_cpu_cores {
+    $number_of_cpu_cores = $_[0] if @_; # setter
     return $number_of_cpu_cores if $number_of_cpu_cores;
     # this works correct only in unix environment. cygwin as well.
     $number_of_cpu_cores = scalar grep m{^processor\t:\s\d+\s*$},`cat /proc/cpuinfo`;
-    die "Can't find out number of cpu cores! Are you in HELL?" unless $number_of_cpu_cores;
+    # otherwise it sets number_of_cpu_cores to 2
+    return $number_of_cpu_cores || 2;
 }
 
 my $store;
@@ -26,17 +29,34 @@ my $retrieve;
 
 # this inits freeze and thaw with Storable subroutines and try to replace them with Sereal counterparts
 sub _init_serializer {
-    my $param = shift;
-    if (exists $param->{freeze} && ref($param->{freeze}) eq 'CODE' &&  exists $param->{thaw} && ref($param->{thaw}) eq 'CODE') {
+    my ($param) = @_;
+    if (grep(exists $param->{$_} && ref($param->{$_}) eq 'CODE',qw(store retrieve)) == 2) {
         $store = $param->{store};
         $retrieve = $param->{retrieve};
     } else {
         # try cereal 
-        #eval q{use Sereal qw(encode_sereal decode_sereal);$freeze = \&encode_sereal;$thaw = \&decode_sereal;};
-        eval q{use Storable qw(store retrieve);$store = \&store;$retrieve = \&retrieve;} unless $store;
+        my $sereal = eval q{use Sereal qw(encode_sereal decode_sereal);use File::Slurp qw(read_file write_file);1};
+        if ($sereal) {
+            #print "using cereal codecs2\n";
+            _assign_sereal_store_retrieve();
+        } else {
+            eval q{use Storable qw(nstore retrieve);$store = \&nstore;$retrieve = \&retrieve;} unless $store;
+        }
     }
     # don't make any assumptions on serializer capabilities, give all the power to user ;)
     # die "bad serializer!" unless join(",",@{$thaw->($freeze->([1,2,3]))}) eq '1,2,3';
+}
+
+sub _assign_sereal_store_retrieve {
+    $store = sub {
+        my ($data,$key) = @_;
+        $data = encode_sereal($data);
+        write_file( $key, {binmode => ':raw'}, $data ) ;
+    };
+    $retrieve = sub {
+        my ($key) = @_;
+        return decode_sereal( scalar read_file( $key, { binmode => ':raw' } ) );
+    };
 }
 _init_serializer({});
 
@@ -46,12 +66,10 @@ sub parallel_map(&@) {
     my $number_of_workers = number_of_cpu_cores;
     my $items_per_worker = int( (@array + $number_of_workers - 1) / $number_of_workers );
     my $items_per_main = @array - $items_per_worker * ($number_of_workers-1);
-    debug('number_of_workers:%d,items_per_worker:%d,items_per_main:%d',$number_of_workers,$items_per_worker,$items_per_main);
     my @store_tmp;
     my %child_index; # {pid=>index}
     my $index_worker = $number_of_workers;
     my @result;
-    die "not defined storable!" unless grep(ref($_) eq 'CODE', $store,$retrieve) == 2;
     while ($index_worker--) {
         if ($index_worker == 0) {
             # first part - do it yourself
@@ -60,33 +78,23 @@ sub parallel_map(&@) {
         }
         my $tmp = File::Temp->new(UNLINK=>0);
         my $key = $tmp->filename;
-        #$tmp->unlink_on_destroy( 0 );
         my $pid = fork();
         if ($pid == 0) {
             my ($cur,$next) = map $items_per_main+$items_per_worker * $_, $index_worker-1, $index_worker;
-            debug('process items from %d to %d',$cur,$next-1);
             my @result = map $code->($_), @array[$cur..$next-1];
-            debug("%d store to %s",$index_worker,$key);
             $store->(\@result,$key);
-            #close($fh);
-            #print "written file, check existance!\n";<>;
             exit;
         }
-        push @store_tmp,$tmp;
+        $store_tmp[$index_worker-1] = $tmp;
         $child_index{$pid} = $index_worker-1;
     }
     # now merge results
     my @results;
     while ((my $pid = wait) != -1) {
-        debug('pid:%s',$pid);
-        debug('child_index: %s, $child_index{$pid}.defined? %s',\%child_index,defined($child_index{$pid})?'yes':'no');
         my $i = $child_index{$pid};
-        debug('i=%d',$i);
-        $DB::single = 2;
         my $tmp = $store_tmp[$i];
         my $key = $tmp->filename;
         $results[$i] = $retrieve->($key);
-        debug("restore %d from key %s,restored results:%s",$i,$key,$results[$i]);
         $tmp->unlink1($key);
     }
     for my $result (@results) {

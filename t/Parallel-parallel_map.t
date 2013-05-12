@@ -8,7 +8,7 @@
 use strict;
 use warnings;
 
-use Test::More tests => 3;
+use Test::More tests => 11;
 BEGIN { use_ok('Parallel::parallel_map') };
 
 #########################
@@ -17,9 +17,12 @@ test2x2();
 
 sub test2x2 {
     print "***Testing school 2x2\n";
-    my $n = 1000000;
+    for my $n (4,16,64,256,1024) {
     my @data = 1..$n;
     my @result = parallel_map {$_*2} @data;
-    ok(@result == $n,'2x2 length');
-    ok(join(",",@result) eq join(",",map $_*2,1..$n),'2x2 values');    
+    ok(@result == $n,"n*2[$n] length");
+    my $expected = join(",",map $_*2,1..$n);
+    my $got = join(",",@result);
+    is($got,$expected,"n*2[$n] values");
+	}
 }
