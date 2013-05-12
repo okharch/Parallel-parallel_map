@@ -8,12 +8,17 @@
 use strict;
 use warnings;
 
-use Test::More tests => 11;
+use Test::More tests => 12;
 BEGIN { use_ok('Parallel::parallel_map') };
 
 #########################
 
 test2x2();
+
+# if parallel_map is called in scalar or void context it does not bother to return results
+# so you avoid IPC data exchange and temporary files
+my $result = parallel_map {$_} 1..32;
+is($result,undef,'parallel_map does not want result context');
 
 sub test2x2 {
     print "***Testing school 2x2\n";

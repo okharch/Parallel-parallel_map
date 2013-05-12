@@ -62,6 +62,7 @@ _init_serializer({});
 
 sub parallel_map(&@) {
     my ($code,@array) = @_;
+    my $wantresult = wantarray;
     # spawn workers
     my $number_of_workers = number_of_cpu_cores;
     my $items_per_worker = int( (@array + $number_of_workers - 1) / $number_of_workers );
@@ -73,30 +74,46 @@ sub parallel_map(&@) {
     while ($index_worker--) {
         if ($index_worker == 0) {
             # first part - do it yourself
-            @result = map $code->($_),@array[0..$items_per_main-1];
+            if ($wantresult) {
+                @result = map $code->($_),@array[0..$items_per_main-1];
+            } else {
+                # ignore the results
+                map $code->($_),@array[0..$items_per_main-1];
+            }
             last;
         }
-        my $tmp = File::Temp->new(UNLINK=>0);
-        my $key = $tmp->filename;
+        my ($tmp,$key);
+        if ($wantresult) {
+            $tmp = File::Temp->new(UNLINK=>0);
+            $key = $tmp->filename;
+        }
         my $pid = fork();
         if ($pid == 0) {
             my ($cur,$next) = map $items_per_main+$items_per_worker * $_, $index_worker-1, $index_worker;
-            my @result = map $code->($_), @array[$cur..$next-1];
-            $store->(\@result,$key);
-            exit;
+            if ($wantresult) {
+                my @result = map $code->($_), @array[$cur..$next-1];
+                $store->(\@result,$key);
+            } else {
+                map $code->($_), @array[$cur..$next-1];
+            }
+            exit;            
         }
-        $store_tmp[$index_worker-1] = $tmp;
-        $child_index{$pid} = $index_worker-1;
+        if ($wantresult) {
+            $store_tmp[$index_worker-1] = $tmp;
+            $child_index{$pid} = $index_worker-1;
+        }
     }
-    # now merge results
+    # now merge kids and their results
     my @results;
     while ((my $pid = wait) != -1) {
+        next unless $wantresult;
         my $i = $child_index{$pid};
         my $tmp = $store_tmp[$i];
         my $key = $tmp->filename;
         $results[$i] = $retrieve->($key);
         $tmp->unlink1($key);
     }
+    return undef unless $wantresult;
     for my $result (@results) {
         push @result, @$result;
     }
