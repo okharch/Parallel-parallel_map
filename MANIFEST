@@ -1,0 +1,6 @@
+Changes
+Makefile.PL
+MANIFEST
+README
+t/Parallel-parallel_map.t
+lib/Parallel/parallel_map.pm
