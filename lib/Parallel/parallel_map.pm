@@ -120,13 +120,6 @@ sub parallel_map(&@) {
     return @result;
 }
 
-use Data::Dumper;
-sub debug {
-    return;
-	my $fmt= shift;
-	printf STDERR "$$:$fmt\n",map ref($_)?Dumper($_):$_,@_;
-}
-
 1;
 
 __END__
@@ -147,13 +140,25 @@ You know from the university that it is the simplest operation for computer as w
 This module tries outperform and speed up even simplest calculations using
 all the power of your server CPU cores and familiar map conception.
 
-It
-1) finds out how many cpu cores you have,
-2) split map work by the number of cores,
-3) do it in parallel and
-4) after job is done by each thread it merges the results into array.
+Here is how it works:
 
-Sorry, slightly more then 1-2-3
+1) finds out how many cpu cores you have,
+
+2) split map work by the number of cores,
+
+3) do it in parallel and
+
+4) after job is done by each thread it merges the results into array if it was called int list context.
+Otherwise it only calculates values and does not collect the results. That can be used as a parallel for loop.
+
+Sorry, slightly more then 1-2-3.
+
+Interprocess communication is done using plain old temporary files. so it should work everywhere where fork is implemented.
+Although I have a benchmark that makes Perl crazy when it tries to make garbage collection under Win32
+despite some small tests work perfectly. So there is no still heaven on Windows ;) .
+
+Although it's not required, please install Sereal and File::Slurp.
+That way IPC is done much faster then using Storable capabilities.
 
 
 =head2 EXPORT
