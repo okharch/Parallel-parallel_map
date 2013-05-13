@@ -6,6 +6,7 @@ our $VERSION = '0.01';
 use strict;
 use warnings;
 use File::Temp qw/tempfile/;
+use List::Util qw(min);
 
 require Exporter;
 
@@ -58,13 +59,28 @@ sub _assign_sereal_store_retrieve {
         return decode_sereal( scalar read_file( $key, { binmode => ':raw' } ) );
     };
 }
+
 _init_serializer({});
+
+sub _merge_children_results {
+    my ($wantresult,$child_index,$store_tmp) = @_;
+    my @results;
+    while ((my $pid = wait) != -1) {
+        next unless $wantresult;
+        my $index = $child_index->{$pid};
+        my $tmp = $store_tmp->[$index];
+        my $key = $tmp->filename;
+        $results[$index] = $retrieve->($key);
+        $tmp->unlink1($key);
+    }
+    return @results;    
+}
 
 sub parallel_map(&@) {
     my ($code,@array) = @_;
     my $wantresult = wantarray;
     # spawn workers
-    my $number_of_workers = number_of_cpu_cores;
+    my $number_of_workers = min(number_of_cpu_cores,scalar @array);
     my $items_per_worker = int( (@array + $number_of_workers - 1) / $number_of_workers );
     my $items_per_main = @array - $items_per_worker * ($number_of_workers-1);
     my @store_tmp;
@@ -82,9 +98,11 @@ sub parallel_map(&@) {
             }
             last;
         }
-        my ($tmp,$key);
+        # here were generate worker to do splitted job in parallel
+        my $key;
         if ($wantresult) {
-            $tmp = File::Temp->new(UNLINK=>0);
+            my $tmp = File::Temp->new(UNLINK=>0);
+            $store_tmp[$index_worker-1] = $tmp;
             $key = $tmp->filename;
         }
         my $pid = fork();
@@ -99,24 +117,13 @@ sub parallel_map(&@) {
             exit;            
         }
         if ($wantresult) {
-            $store_tmp[$index_worker-1] = $tmp;
             $child_index{$pid} = $index_worker-1;
         }
     }
     # now merge kids and their results
-    my @results;
-    while ((my $pid = wait) != -1) {
-        next unless $wantresult;
-        my $i = $child_index{$pid};
-        my $tmp = $store_tmp[$i];
-        my $key = $tmp->filename;
-        $results[$i] = $retrieve->($key);
-        $tmp->unlink1($key);
-    }
+    my @results = _merge_children_results($wantresult,\%child_index,\@store_tmp);
     return undef unless $wantresult;
-    for my $result (@results) {
-        push @result, @$result;
-    }
+    push @result, @$_ for @results;
     return @result;
 }
 
