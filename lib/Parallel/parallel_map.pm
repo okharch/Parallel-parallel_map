@@ -1,12 +1,11 @@
 package Parallel::parallel_map;
 
 use 5.008;
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 use strict;
 use warnings;
-use File::Temp qw/tempfile/;
-use List::Util qw(min);
+use Parallel::DataPipe;
 
 require Exporter;
 
@@ -14,117 +13,19 @@ our @ISA = qw(Exporter);
 
 our @EXPORT = qw(parallel_map);
 
-# this should work with Windows NT or if user explicitly set that
-my $number_of_cpu_cores = $ENV{NUMBER_OF_PROCESSORS}; 
-sub number_of_cpu_cores {
-    $number_of_cpu_cores = $_[0] if @_; # setter
-    return $number_of_cpu_cores if $number_of_cpu_cores;
-    # this works correct only in unix environment. cygwin as well.
-    $number_of_cpu_cores = scalar grep m{^processor\t:\s\d+\s*$},`cat /proc/cpuinfo`;
-    # otherwise it sets number_of_cpu_cores to 2
-    return $number_of_cpu_cores || 2;
-}
-
-my $store;
-my $retrieve;
-
-# this inits freeze and thaw with Storable subroutines and try to replace them with Sereal counterparts
-sub _init_serializer {
-    my ($param) = @_;
-    if (grep(exists $param->{$_} && ref($param->{$_}) eq 'CODE',qw(store retrieve)) == 2) {
-        $store = $param->{store};
-        $retrieve = $param->{retrieve};
-    } else {
-        # try cereal 
-        my $sereal = eval q{use Sereal qw(encode_sereal decode_sereal);use File::Slurp qw(read_file write_file);1};
-        if ($sereal) {
-            #print "using cereal codecs2\n";
-            _assign_sereal_store_retrieve();
-        } else {
-            eval q{use Storable qw(nstore retrieve);$store = \&nstore;$retrieve = \&retrieve;} unless $store;
-        }
-    }
-    # don't make any assumptions on serializer capabilities, give all the power to user ;)
-    # die "bad serializer!" unless join(",",@{$thaw->($freeze->([1,2,3]))}) eq '1,2,3';
-}
-
-sub _assign_sereal_store_retrieve {
-    $store = sub {
-        my ($data,$key) = @_;
-        $data = encode_sereal($data);
-        write_file( $key, {binmode => ':raw'}, $data ) ;
-    };
-    $retrieve = sub {
-        my ($key) = @_;
-        return decode_sereal( scalar read_file( $key, { binmode => ':raw' } ) );
-    };
-}
-
-_init_serializer({});
-
-sub _merge_children_results {
-    my ($wantresult,$child_index,$store_tmp) = @_;
-    my @results;
-    while ((my $pid = wait) != -1) {
-        next unless $wantresult;
-        my $index = $child_index->{$pid};
-        my $tmp = $store_tmp->[$index];
-        my $key = $tmp->filename;
-        $results[$index] = $retrieve->($key);
-        $tmp->unlink1($key);
-    }
-    return @results;    
-}
 
 sub parallel_map(&@) {
-    my ($code,@array) = @_;
-    my $wantresult = wantarray;
-    # spawn workers
-    my $number_of_workers = min(number_of_cpu_cores,scalar @array);
-    my $items_per_worker = int( (@array + $number_of_workers - 1) / $number_of_workers );
-    my $items_per_main = @array - $items_per_worker * ($number_of_workers-1);
-    my @store_tmp;
-    my %child_index; # {pid=>index}
-    my $index_worker = $number_of_workers;
-    my @result;
-    while ($index_worker--) {
-        if ($index_worker == 0) {
-            # first part - do it yourself
-            if ($wantresult) {
-                @result = map $code->($_),@array[0..$items_per_main-1];
-            } else {
-                # ignore the results
-                map $code->($_),@array[0..$items_per_main-1];
-            }
-            last;
-        }
-        # here were generate worker to do splitted job in parallel
-        my $key;
-        if ($wantresult) {
-            my $tmp = File::Temp->new(UNLINK=>0);
-            $store_tmp[$index_worker-1] = $tmp;
-            $key = $tmp->filename;
-        }
-        my $pid = fork();
-        if ($pid == 0) {
-            my ($cur,$next) = map $items_per_main+$items_per_worker * $_, $index_worker-1, $index_worker;
-            if ($wantresult) {
-                my @result = map $code->($_), @array[$cur..$next-1];
-                $store->(\@result,$key);
-            } else {
-                map $code->($_), @array[$cur..$next-1];
-            }
-            exit;            
-        }
-        if ($wantresult) {
-            $child_index{$pid} = $index_worker-1;
-        }
+    my ($code,@input) = @_;
+    my (@result,@output);
+    if (wantarray) {
+        @output = (output=>sub {my ($r,$i) = @_;$result[$i] = $r;});
     }
-    # now merge kids and their results
-    my @results = _merge_children_results($wantresult,\%child_index,\@store_tmp);
-    return undef unless $wantresult;
-    push @result, @$_ for @results;
-    return @result;
+    Parallel::DataPipe::run {
+        input => \@input,
+        process => $code,
+        @output,
+    };
+    return wantarray?@result:();
 }
 
 1;
@@ -133,7 +34,7 @@ __END__
 
 =head1 NAME
 
-Parallel::parallel_map - really parallel calculation in Perl
+Parallel::parallel_map - map in parallel using all CPU cores
 
 =head1 SYNOPSIS
 
@@ -142,39 +43,39 @@ Parallel::parallel_map - really parallel calculation in Perl
 
 =head1 DESCRIPTION
 
-You know from the school that nothing is more simple than 2 x 2 = 4
-You know from the university that it is the simplest operation for computer as well (left shift).
-This module tries outperform and speed up even simplest calculations using
-all the power of your server CPU cores and familiar map conception.
+It does the same as map in perl, but using all CPU/cores.
+Take into account that each iteration is executed as separate process i.e. changes of memory inside iterator will not affect
+memory state of main thread.
+Still there is some overhead on IPC, so to calculate $_*2 in parallel does not make practical sense.
+Although if your iteration is more complex then that - you will win.
+Do benchmarks to figure out.
 
-Here is how it works:
-
-1) finds out how many cpu cores you have,
-
-2) split map work by the number of cores,
-
-3) do it in parallel and
-
-4) after job is done by each thread it merges the results into array if it was called int list context.
-Otherwise it only calculates values and does not collect the results. That can be used as a parallel for loop.
-
-Sorry, slightly more then 1-2-3.
-
-Interprocess communication is done using plain old temporary files. so it should work everywhere where fork is implemented.
-Although I have a benchmark that makes Perl crazy when it tries to make garbage collection under Win32
-despite some small tests work perfectly. So there is no still heaven on Windows ;) .
-
-Although it's not required, please install Sereal and File::Slurp.
-That way IPC is done much faster then using Storable capabilities.
+It is implemented using Parallel::DataPipe.
 
 
 =head2 EXPORT
 
-parallel_map - that what this module is about
+parallel_map the same as map, but in parallel
+
+=head2 BENCHMARKS
+
+I have found Parallel::Iterator module at CPAN which basically does the same thing.
+But it has much bigger overhead on IPC than this module.
+
+ perl -MParallel::Iterator=iterate_as_array -MBenchmark -e'@a=1..10000;timethis(10,q{@m2=iterate_as_array(sub {$_[1]*2}, \@a)})'
+ timethis 10:  4 wallclock secs ( 2.85 usr  0.67 sys +  2.83 cusr  0.83 csys =  7.19 CPU) @  1.39/s (n=10)
+
+ perl -MParallel::parallel_map -MBenchmark -e'timethis(10,q{@m2=parallel_map {$_*2} 1..10000_00})'
+ timethis 10:  5 wallclock secs ( 2.81 usr  0.19 sys +  4.51 cusr  2.13 csys =  9.64 CPU) @  1.04/s (n=10)
+
+It's almost 100 times faster than Parallel::Iterator on this simple iteration.
 
 =head1 SEE ALSO
 
-Parallel::Loops, MCE, Parallel::DataPipe
+Parallel::DataPipe,
+Parallel::Loops,
+MCE, POE,
+Parallel::Iterator
 
 =head1 AUTHOR
 

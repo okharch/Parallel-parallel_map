@@ -1,12 +1,9 @@
-Parallel-parallel_map version 0.01
+Parallel-parallel_map version 0.02
 ==================================
 
-really parallel calculations with perl.
+parallel map
 
-You know from school that nothing can be more simple than 2 x 2 = 4
-You know from university that it is the simplest operation for computer as well (left shift).
-This module tries outperform and speed up even simplest calculations using
-all the power of your server CPU cores and familiar map conception.
+It uses Parallel::DataPipe to implement parallel calculations using familiar map paradigm.
 
 INSTALLATION
 
