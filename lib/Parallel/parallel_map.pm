@@ -55,9 +55,9 @@ It is implemented using Parallel::DataPipe.
 
 =head2 EXPORT
 
-parallel_map the same as map, but in parallel
+parallel_map 
 
-=head2 BENCHMARKS
+=head1 BENCHMARKS
 
 I have found Parallel::Iterator module at CPAN which basically does the same thing.
 But it has much bigger overhead on IPC than this module.
